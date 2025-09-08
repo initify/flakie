@@ -1,35 +1,36 @@
 # flakie
 
-Flakie is a tiny tool and GitHub Action to detect flaky tests in Go projects by running tests multiple times and aggregating pass/fail per test case.
+Flakie is a GitHub App (bot) that detects flaky tests on pull requests by running tests multiple times and commenting the results.
 
-## CLI
+## GitHub App setup
 
-Build:
+1) Create a GitHub App (in your org or user):
+- Webhook URL: https://your-domain/webhook
+- Webhook secret: set and keep safe
+- Repository permissions: Pull requests (Read & write), Contents (Read)
+- Subscribe to: Pull request events
+- Generate and download the private key (PEM) and note the App ID
 
-```
-go build -o flakie ./cmd/flakie
-```
+2) Install the App on your repositories (or all)
 
-Run against all packages 5 times:
+3) Run the bot server:
+- Env vars required:
+  - FLAKIE_APP_ID: numeric App ID
+  - FLAKIE_PRIVATE_KEY: PEM contents
+  - FLAKIE_WEBHOOK_SECRET: webhook secret
+- Run:
+  - go build -o flakie-bot ./cmd/bot
+  - PORT=8080 FLAKIE_APP_ID=... FLAKIE_PRIVATE_KEY="$(cat private-key.pem)" FLAKIE_WEBHOOK_SECRET=... ./flakie-bot
 
-```
-./flakie -runs 5 -pkg ./... -timeout 10m
-```
+Expose the server publicly (ngrok/cloudflared/your infra) and set the Webhook URL accordingly.
 
-JSON output:
+## What it does
 
-```
-./flakie -runs 5 -pkg ./... -json > flakie.json
-```
+- Listens for pull_request events
+- Downloads the PR head tarball
+- Runs `go test` multiple times to detect flaky tests
+- Posts a PR comment summarizing flaky and consistently failing tests
 
-Exit codes:
+## Examples
 
-- 0: no flaky tests and no consistent failures
-- 1: consistent failures only
-- 3: flaky tests detected (regardless of consistent failures)
-
-## GitHub Action
-
-The workflow at `.github/workflows/flakie.yml` runs on pull requests, executes tests multiple times, and posts a sticky PR comment summarizing flaky and consistently failing tests.
-
-Permissions: it requests `pull-requests: write` to post the comment.
+Sample packages under `examples/` include stable tests and an intentionally flaky test you can use to try the bot locally.
