@@ -1,0 +1,11 @@
+{
+  "functions": {
+    "api/*.go": {
+      "runtime": "vercel-go@0.5.1"
+    }
+  },
+  "routes": [
+  { "src": "/api/webhook", "dest": "/api/webhook.go" },
+  { "src": "/webhook", "dest": "/api/webhook.go" }
+  ]
+}

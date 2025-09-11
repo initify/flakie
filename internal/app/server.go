@@ -8,6 +8,8 @@ import (
 	"context"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -30,6 +32,8 @@ type Config struct {
 	AppID         int64
 	PrivateKeyPEM []byte
 	WebhookSecret string
+	// When true, do not run tests in-process. Instead, trigger an external workflow (repository_dispatch).
+	RunExternal bool
 }
 
 func LoadConfigFromEnv() (*Config, error) {
@@ -44,7 +48,23 @@ func LoadConfigFromEnv() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Config{AppID: appID, PrivateKeyPEM: []byte(key), WebhookSecret: secret}, nil
+	// Allow both raw PEM or base64-encoded PEM for easier env management on platforms like Vercel
+	var pemBytes []byte
+	if strings.Contains(key, "BEGIN") {
+		pemBytes = []byte(key)
+	} else {
+		if dec, err := base64.StdEncoding.DecodeString(key); err == nil {
+			pemBytes = dec
+		} else {
+			// Fallback to raw bytes if base64 decode fails
+			pemBytes = []byte(key)
+		}
+	}
+	runExternal := false
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("FLAKIE_RUN_EXTERNAL"))); v == "1" || v == "true" || v == "yes" {
+		runExternal = true
+	}
+	return &Config{AppID: appID, PrivateKeyPEM: pemBytes, WebhookSecret: secret, RunExternal: runExternal}, nil
 }
 
 type Server struct {
@@ -52,6 +72,16 @@ type Server struct {
 }
 
 func NewServer(cfg *Config) *Server { return &Server{cfg: cfg} }
+
+// ServerFromEnv loads configuration from environment variables and returns a Server.
+// Callers can use this to avoid repeating config loading + server construction.
+func ServerFromEnv() (*Server, error) {
+	cfg, err := LoadConfigFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	return NewServer(cfg), nil
+}
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	payload, err := gh.ValidatePayload(r, []byte(s.cfg.WebhookSecret))
@@ -90,11 +120,23 @@ func (s *Server) handlePREvent(ctx context.Context, e *gh.PullRequestEvent) {
 		return
 	}
 
-	// Post a pending comment
+	// Post a pending/queued comment
 	body := "🧪 Flakie bot: running flaky test detection..."
 	_, _, _ = cli.Issues.CreateComment(ctx, owner, repo, prNum, &gh.IssueComment{Body: &body})
 
-	// Download tarball for the PR head
+	if s.cfg.RunExternal {
+		if err := s.triggerRepositoryDispatch(ctx, cli, owner, repo, sha, prNum); err != nil {
+			log.Printf("dispatch err: %v", err)
+			failMsg := fmt.Sprintf("Flakie bot: failed to trigger external workflow: %v", err)
+			_, _, _ = cli.Issues.CreateComment(ctx, owner, repo, prNum, &gh.IssueComment{Body: &failMsg})
+			return
+		}
+		queuedMsg := "Flakie bot: triggered repository_dispatch 'flakie-run'. Ensure the repo has a workflow listening for it."
+		_, _, _ = cli.Issues.CreateComment(ctx, owner, repo, prNum, &gh.IssueComment{Body: &queuedMsg})
+		return
+	}
+
+	// In-process mode: Download tarball for the PR head
 	tmp, err := os.MkdirTemp("", "flakie-pr-*")
 	if err != nil {
 		log.Printf("tmp err: %v", err)
@@ -122,6 +164,25 @@ func (s *Server) handlePREvent(ctx context.Context, e *gh.PullRequestEvent) {
 	_, _, _ = cli.Issues.CreateComment(ctx, owner, repo, prNum, &gh.IssueComment{Body: &comment})
 
 	_ = instID
+}
+
+// triggerRepositoryDispatch asks GitHub to fire a repository_dispatch event that a workflow can listen to.
+func (s *Server) triggerRepositoryDispatch(ctx context.Context, cli *gh.Client, owner, repo, sha string, prNum int) error {
+	payload := map[string]interface{}{
+		"sha":       sha,
+		"pr_number": prNum,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	raw := json.RawMessage(b)
+	_, _, err = cli.Repositories.Dispatch(ctx, owner, repo, gh.DispatchRequestOptions{
+		EventType:     "flakie-run",
+		ClientPayload: &raw,
+	})
+	return err
 }
 
 // runFlakiness runs `go test` repeatedly in workdir and returns a summary and a human-readable comment.
