@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/initify/flakie/internal/app"
+	"github.com/initify/flakie/pkg/app"
 )
 
 func main() {

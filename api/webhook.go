@@ -3,7 +3,7 @@ package handler
 import (
 	"net/http"
 
-	"github.com/initify/flakie/internal/app"
+	"github.com/initify/flakie/pkg/app"
 )
 
 // Handler is the Vercel serverless function entrypoint for GitHub webhooks.
